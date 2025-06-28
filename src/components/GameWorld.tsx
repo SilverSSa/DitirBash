@@ -1,296 +1,632 @@
-import React from 'react';
-import { Player, Enemy, Resource, GameState } from '../types/game';
-import { BIOMES } from '../data/gameData';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useGame } from '../context/GameContext';
 
-interface GameWorldProps {
-  player: Player;
-  enemies: Enemy[];
-  resources: Resource[];
-  gameState: GameState;
-  worldSize: number;
-  onResourceClick: (resourceId: string) => void;
-  onEnemyClick: (enemyId: string) => void;
+interface Position {
+  x: number;
+  y: number;
 }
 
-export const GameWorld: React.FC<GameWorldProps> = ({
-  player,
-  enemies,
-  resources,
-  gameState,
-  worldSize,
-  onResourceClick,
-  onEnemyClick
-}) => {
-  const biome = BIOMES[gameState.currentBiome];
-  const viewportSize = 600;
-  const scale = 1.5;
+interface Enemy {
+  id: string;
+  type: 'wolf' | 'mutant' | 'shadow' | 'boss';
+  position: Position;
+  health: number;
+  maxHealth: number;
+  isAggressive: boolean;
+  isDarkRealm: boolean;
+  isDead: boolean;
+}
 
-  // Calculate camera offset to center on player
-  const cameraX = player.x - viewportSize / 2;
-  const cameraY = player.y - viewportSize / 2;
+interface Attack {
+  id: string;
+  position: Position;
+  targetPosition: Position;
+  damage: number;
+  timestamp: number;
+}
 
-  const getSanityEffect = () => {
-    const sanityPercent = player.sanity / player.maxSanity;
-    if (sanityPercent < 0.25) return 'blur(4px) saturate(0.3) hue-rotate(180deg) contrast(1.5)';
-    if (sanityPercent < 0.5) return 'blur(2px) saturate(0.6) contrast(1.2)';
-    if (sanityPercent < 0.75) return 'saturate(0.8) contrast(1.1)';
-    return 'none';
-  };
+interface GameWorldProps {
+  worldSize: { width: number; height: number };
+}
 
-  const getTimeOfDayFilter = () => {
-    const time = gameState.timeOfDay;
-    if (time < 0.25 || time > 0.75) {
-      return 'brightness(0.4) contrast(1.3) sepia(0.2)';
-    } else if (time < 0.3 || time > 0.7) {
-      return 'brightness(0.7) sepia(0.4) hue-rotate(15deg)';
+export default function GameWorld({ worldSize }: GameWorldProps) {
+  const { state, dispatch } = useGame();
+  const [playerPosition, setPlayerPosition] = useState<Position>({ x: 600, y: 450 });
+  const [enemies, setEnemies] = useState<Enemy[]>([]);
+  const [attacks, setAttacks] = useState<Attack[]>([]);
+  const [keysPressed, setKeysPressed] = useState<Set<string>>(new Set());
+  const [cameraOffset, setCameraOffset] = useState<Position>({ x: 0, y: 0 });
+  const [mousePosition, setMousePosition] = useState<Position>({ x: 0, y: 0 });
+  const gameWorldRef = useRef<HTMLDivElement>(null);
+
+  // Initialize enemies
+  useEffect(() => {
+    const initialEnemies: Enemy[] = [
+      {
+        id: '1',
+        type: 'wolf',
+        position: { x: 300, y: 300 },
+        health: 50,
+        maxHealth: 50,
+        isAggressive: false,
+        isDarkRealm: false,
+        isDead: false
+      },
+      {
+        id: '2',
+        type: 'mutant',
+        position: { x: 900, y: 600 },
+        health: 80,
+        maxHealth: 80,
+        isAggressive: true,
+        isDarkRealm: false,
+        isDead: false
+      },
+      {
+        id: '3',
+        type: 'shadow',
+        position: { x: 450, y: 750 },
+        health: 120,
+        maxHealth: 120,
+        isAggressive: false,
+        isDarkRealm: true,
+        isDead: false
+      },
+      {
+        id: '4',
+        type: 'boss',
+        position: { x: 1050, y: 300 },
+        health: 300,
+        maxHealth: 300,
+        isAggressive: false,
+        isDarkRealm: false,
+        isDead: false
+      },
+      {
+        id: '5',
+        type: 'wolf',
+        position: { x: 750, y: 150 },
+        health: 50,
+        maxHealth: 50,
+        isAggressive: false,
+        isDarkRealm: false,
+        isDead: false
+      },
+      {
+        id: '6',
+        type: 'mutant',
+        position: { x: 200, y: 600 },
+        health: 80,
+        maxHealth: 80,
+        isAggressive: false,
+        isDarkRealm: false,
+        isDead: false
+      }
+    ];
+    setEnemies(initialEnemies);
+  }, []);
+
+  // Handle keyboard input
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      setKeysPressed(prev => new Set(prev).add(e.key.toLowerCase()));
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      setKeysPressed(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(e.key.toLowerCase());
+        return newSet;
+      });
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  // Handle mouse movement and clicks
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (gameWorldRef.current) {
+        const rect = gameWorldRef.current.getBoundingClientRect();
+        setMousePosition({
+          x: e.clientX - rect.left + cameraOffset.x,
+          y: e.clientY - rect.top + cameraOffset.y
+        });
+      }
+    };
+
+    const handleMouseClick = (e: MouseEvent) => {
+      if (gameWorldRef.current && state.equippedWeapon) {
+        const rect = gameWorldRef.current.getBoundingClientRect();
+        const worldX = e.clientX - rect.left + cameraOffset.x;
+        const worldY = e.clientY - rect.top + cameraOffset.y;
+        
+        performAttack(worldX, worldY);
+      }
+    };
+
+    const gameWorld = gameWorldRef.current;
+    if (gameWorld) {
+      gameWorld.addEventListener('mousemove', handleMouseMove);
+      gameWorld.addEventListener('click', handleMouseClick);
     }
-    return 'brightness(1)';
+
+    return () => {
+      if (gameWorld) {
+        gameWorld.removeEventListener('mousemove', handleMouseMove);
+        gameWorld.removeEventListener('click', handleMouseClick);
+      }
+    };
+  }, [cameraOffset, state.equippedWeapon]);
+
+  // Perform attack
+  const performAttack = useCallback((targetX: number, targetY: number) => {
+    if (!state.equippedWeapon) return;
+
+    const attackRange = getWeaponRange(state.equippedWeapon);
+    const attackDamage = getWeaponDamage(state.equippedWeapon);
+    
+    // Check distance to target
+    const dx = targetX - playerPosition.x;
+    const dy = targetY - playerPosition.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    if (distance <= attackRange) {
+      // Create attack visual
+      const newAttack: Attack = {
+        id: Date.now().toString(),
+        position: { x: playerPosition.x, y: playerPosition.y },
+        targetPosition: { x: targetX, y: targetY },
+        damage: attackDamage,
+        timestamp: Date.now()
+      };
+
+      setAttacks(prev => [...prev, newAttack]);
+
+      // Check for enemy hits
+      setEnemies(prevEnemies => 
+        prevEnemies.map(enemy => {
+          if (enemy.isDead) return enemy;
+          if (enemy.isDarkRealm && !state.isInDarkRealm) return enemy;
+
+          const enemyDx = targetX - enemy.position.x;
+          const enemyDy = targetY - enemy.position.y;
+          const enemyDistance = Math.sqrt(enemyDx * enemyDx + enemyDy * enemyDy);
+
+          if (enemyDistance <= 40) { // Hit radius
+            const newHealth = enemy.health - attackDamage;
+            if (newHealth <= 0) {
+              // Enemy defeated - award souls
+              dispatch({ type: 'ADD_SOULS', payload: getEnemySoulValue(enemy.type) });
+              return { ...enemy, health: 0, isDead: true };
+            }
+            return { ...enemy, health: newHealth, isAggressive: true };
+          }
+          return enemy;
+        })
+      );
+
+      // Remove attack visual after animation
+      setTimeout(() => {
+        setAttacks(prev => prev.filter(attack => attack.id !== newAttack.id));
+      }, 500);
+    }
+  }, [playerPosition, state.equippedWeapon, state.isInDarkRealm, dispatch]);
+
+  // Player movement
+  useEffect(() => {
+    const movePlayer = () => {
+      const speed = 4;
+      let newX = playerPosition.x;
+      let newY = playerPosition.y;
+
+      if (keysPressed.has('w') || keysPressed.has('arrowup')) newY -= speed;
+      if (keysPressed.has('s') || keysPressed.has('arrowdown')) newY += speed;
+      if (keysPressed.has('a') || keysPressed.has('arrowleft')) newX -= speed;
+      if (keysPressed.has('d') || keysPressed.has('arrowright')) newX += speed;
+
+      // Boundary checking
+      newX = Math.max(30, Math.min(worldSize.width - 30, newX));
+      newY = Math.max(30, Math.min(worldSize.height - 30, newY));
+
+      if (newX !== playerPosition.x || newY !== playerPosition.y) {
+        setPlayerPosition({ x: newX, y: newY });
+        
+        // Update camera to follow player
+        const viewportWidth = 1200;
+        const viewportHeight = 800;
+        setCameraOffset({
+          x: Math.max(0, Math.min(worldSize.width - viewportWidth, newX - viewportWidth / 2)),
+          y: Math.max(0, Math.min(worldSize.height - viewportHeight, newY - viewportHeight / 2))
+        });
+      }
+    };
+
+    const interval = setInterval(movePlayer, 16); // ~60fps
+    return () => clearInterval(interval);
+  }, [keysPressed, playerPosition, worldSize]);
+
+  // Enemy AI
+  useEffect(() => {
+    const updateEnemies = () => {
+      setEnemies(prevEnemies => 
+        prevEnemies.map(enemy => {
+          if (enemy.isDead) return enemy;
+          if (enemy.isDarkRealm && !state.isInDarkRealm) {
+            return enemy; // Dark realm enemies not visible
+          }
+
+          const dx = playerPosition.x - enemy.position.x;
+          const dy = playerPosition.y - enemy.position.y;
+          const distance = Math.sqrt(dx * dx + dy * dy);
+
+          // Aggro range
+          if (distance < 150 && !enemy.isAggressive) {
+            return { ...enemy, isAggressive: true };
+          }
+
+          // Lose aggro if too far
+          if (distance > 300 && enemy.isAggressive) {
+            return { ...enemy, isAggressive: false };
+          }
+
+          // Move towards player if aggressive
+          if (enemy.isAggressive && distance > 40) {
+            const speed = getEnemySpeed(enemy.type);
+            const moveX = (dx / distance) * speed;
+            const moveY = (dy / distance) * speed;
+
+            return {
+              ...enemy,
+              position: {
+                x: enemy.position.x + moveX,
+                y: enemy.position.y + moveY
+              }
+            };
+          }
+
+          return enemy;
+        })
+      );
+    };
+
+    const interval = setInterval(updateEnemies, 100);
+    return () => clearInterval(interval);
+  }, [playerPosition, state.isInDarkRealm]);
+
+  // Helper functions
+  const getWeaponRange = (weapon: string) => {
+    switch (weapon) {
+      case 'Soul Sword': return 80;
+      case 'Dark Claw': return 60;
+      case 'Spirit Bow': return 200;
+      case 'Blizzard Staff': return 150;
+      case 'Flame Gauntlet': return 100;
+      case 'Stone Hammer': return 70;
+      default: return 50;
+    }
   };
 
-  const getWeatherEffect = () => {
-    switch (gameState.weather) {
-      case 'fog':
-        return 'blur(1px) opacity(0.8)';
-      case 'storm':
-        return 'contrast(1.3) brightness(0.6)';
-      case 'sandstorm':
-        return 'sepia(0.6) blur(2px) brightness(0.7)';
+  const getWeaponDamage = (weapon: string) => {
+    switch (weapon) {
+      case 'Soul Sword': return 35;
+      case 'Dark Claw': return 25;
+      case 'Spirit Bow': return 30;
+      case 'Blizzard Staff': return 40;
+      case 'Flame Gauntlet': return 45;
+      case 'Stone Hammer': return 50;
+      default: return 20;
+    }
+  };
+
+  const getEnemySpeed = (type: string) => {
+    switch (type) {
+      case 'wolf': return 2;
+      case 'mutant': return 1.5;
+      case 'shadow': return 2.5;
+      case 'boss': return 1;
+      default: return 1;
+    }
+  };
+
+  const getEnemySoulValue = (type: string) => {
+    switch (type) {
+      case 'wolf': return 10;
+      case 'mutant': return 25;
+      case 'shadow': return 40;
+      case 'boss': return 100;
+      default: return 5;
+    }
+  };
+
+  const getEnemyIcon = (type: string) => {
+    switch (type) {
+      case 'wolf': return '🐺';
+      case 'mutant': return '👹';
+      case 'shadow': return '👻';
+      case 'boss': return '💀';
+      default: return '❓';
+    }
+  };
+
+  const getEnemySize = (type: string) => {
+    switch (type) {
+      case 'wolf': return 'w-10 h-10';
+      case 'mutant': return 'w-12 h-12';
+      case 'shadow': return 'w-11 h-11';
+      case 'boss': return 'w-20 h-20';
+      default: return 'w-10 h-10';
+    }
+  };
+
+  const getBiomePattern = () => {
+    switch (state.currentBiome) {
+      case 'Ash Dunes':
+        return 'bg-gradient-to-br from-orange-900/20 to-red-900/20';
+      case 'Verdant Hollow':
+        return 'bg-gradient-to-br from-green-900/20 to-emerald-900/20';
+      case 'Crystal Rift':
+        return 'bg-gradient-to-br from-purple-900/20 to-indigo-900/20';
+      case 'Frozen Grief':
+        return 'bg-gradient-to-br from-blue-900/20 to-cyan-900/20';
+      case 'Plaguelands':
+        return 'bg-gradient-to-br from-yellow-900/20 to-lime-900/20';
       default:
-        return 'none';
+        return 'bg-gradient-to-br from-slate-900/20 to-gray-900/20';
     }
   };
 
   return (
-    <div className="relative w-full h-full bg-gray-900 overflow-hidden">
-      {/* World Container */}
-      <div
-        className="absolute transition-all duration-100"
+    <div 
+      ref={gameWorldRef}
+      className="relative w-full h-full overflow-hidden bg-slate-800 cursor-crosshair"
+      style={{ width: '1200px', height: '800px' }}
+    >
+      {/* World Background */}
+      <div 
+        className={`absolute inset-0 ${getBiomePattern()}`}
         style={{
-          width: worldSize,
-          height: worldSize,
-          transform: `translate(${-cameraX}px, ${-cameraY}px) scale(${scale})`,
-          filter: `${getSanityEffect()} ${getTimeOfDayFilter()} ${getWeatherEffect()}`,
-          backgroundColor: biome.color + '15'
+          width: `${worldSize.width}px`,
+          height: `${worldSize.height}px`,
+          transform: `translate(-${cameraOffset.x}px, -${cameraOffset.y}px)`
         }}
       >
-        {/* Biome Background Pattern */}
-        <div
-          className="absolute inset-0 opacity-30"
-          style={{
-            width: worldSize,
-            height: worldSize,
-            backgroundImage: `
-              radial-gradient(circle at 20% 20%, ${biome.color}40 0%, transparent 40%),
-              radial-gradient(circle at 80% 80%, ${biome.color}30 0%, transparent 40%),
-              radial-gradient(circle at 40% 60%, ${biome.color}20 0%, transparent 30%)
-            `,
-            backgroundSize: '200px 200px, 150px 150px, 100px 100px'
-          }}
-        />
+        {/* Environmental Elements */}
+        {[...Array(30)].map((_, i) => (
+          <div
+            key={`env-${i}`}
+            className="absolute w-6 h-6 bg-green-600 rounded-full opacity-60"
+            style={{
+              left: `${(i * 123) % worldSize.width}px`,
+              top: `${(i * 456) % worldSize.height}px`,
+            }}
+          />
+        ))}
 
-        {/* Grid Pattern for Better Visibility */}
-        <div
-          className="absolute inset-0 opacity-10"
-          style={{
-            width: worldSize,
-            height: worldSize,
-            backgroundImage: `
-              linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px),
-              linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)
-            `,
-            backgroundSize: '50px 50px'
-          }}
-        />
-
-        {/* Resources */}
-        {resources.map(resource => {
-          const distance = Math.sqrt(
-            Math.pow(player.x - resource.x, 2) + Math.pow(player.y - resource.y, 2)
-          );
-          const inLightRadius = distance < player.lightRadius;
-          
-          return (
-            <div
-              key={resource.id}
-              className={`absolute cursor-pointer transition-all duration-300 transform hover:scale-110 ${
-                inLightRadius ? 'opacity-100 scale-100' : 'opacity-40 scale-75'
-              }`}
-              style={{
-                left: resource.x - 12,
-                top: resource.y - 12,
-                width: 24,
-                height: 24
-              }}
-              onClick={() => onResourceClick(resource.id)}
-            >
-              <div
-                className="w-full h-full rounded-full border-2 border-white/30"
-                style={{
-                  backgroundColor: resource.type === 'soul_flower' ? '#22c55e' : 
-                                 resource.type === 'ancient_ether' ? '#3b82f6' : 
-                                 resource.type === 'dark_ether' ? '#8b5cf6' : 
-                                 resource.type === 'stone' ? '#6b7280' : '#92400e',
-                  boxShadow: inLightRadius ? `0 0 15px ${resource.type === 'soul_flower' ? '#22c55e' : 
-                                                       resource.type === 'ancient_ether' ? '#3b82f6' : 
-                                                       resource.type === 'dark_ether' ? '#8b5cf6' : 
-                                                       resource.type === 'stone' ? '#6b7280' : '#92400e'}` : 'none'
-                }}
-              >
-                <div className="w-full h-full flex items-center justify-center text-white text-xs font-bold">
-                  {resource.quantity}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Enemies */}
-        {enemies.map(enemy => {
-          const distance = Math.sqrt(
-            Math.pow(player.x - enemy.x, 2) + Math.pow(player.y - enemy.y, 2)
-          );
-          const inLightRadius = distance < player.lightRadius;
-          const isDarkVisible = gameState.darkEyesActive || !enemy.isDark;
-          
-          if (!isDarkVisible && !inLightRadius) return null;
-
-          return (
-            <div
-              key={enemy.id}
-              className={`absolute cursor-pointer transition-all duration-200 transform hover:scale-110 ${
-                enemy.type === 'hostile' ? 'bg-red-500' : 
-                enemy.type === 'neutral' ? 'bg-yellow-500' : 
-                enemy.type === 'boss' ? 'bg-purple-600' : 'bg-green-500'
-              } ${inLightRadius ? 'opacity-100' : 'opacity-60'} ${
-                enemy.isDark ? 'ring-4 ring-purple-400 animate-pulse' : ''
-              }`}
-              style={{
-                left: enemy.x - 16,
-                top: enemy.y - 16,
-                width: enemy.type === 'boss' ? 40 : 32,
-                height: enemy.type === 'boss' ? 40 : 32,
-                borderRadius: '50%',
-                border: '3px solid rgba(255,255,255,0.8)',
-                filter: enemy.isDark && gameState.darkEyesActive ? 'drop-shadow(0 0 12px #8b5cf6)' : 'none'
-              }}
-              onClick={() => onEnemyClick(enemy.id)}
-            >
-              {/* Health bar */}
-              <div className="absolute -top-3 left-0 w-full h-1.5 bg-gray-800 rounded-full border border-white/30">
-                <div
-                  className="h-full bg-red-500 rounded-full transition-all duration-300"
-                  style={{ width: `${(enemy.health / enemy.maxHealth) * 100}%` }}
-                />
-              </div>
-              
-              {/* Enemy type indicator */}
-              <div className="w-full h-full flex items-center justify-center text-white text-xs font-bold">
-                {enemy.type === 'boss' ? '👑' : 
-                 enemy.type === 'hostile' ? '⚔️' : 
-                 enemy.type === 'neutral' ? '👁️' : '🦌'}
-              </div>
-            </div>
-          );
-        })}
+        {/* Resource Nodes */}
+        {[...Array(15)].map((_, i) => (
+          <div
+            key={`resource-${i}`}
+            className="absolute w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center text-sm animate-pulse"
+            style={{
+              left: `${(i * 200 + 100) % (worldSize.width - 100)}px`,
+              top: `${(i * 150 + 80) % (worldSize.height - 100)}px`,
+            }}
+          >
+            💎
+          </div>
+        ))}
 
         {/* Player */}
         <div
-          className="absolute transition-all duration-100 z-20"
+          className="absolute w-16 h-16 bg-blue-500 rounded-full flex items-center justify-center text-3xl border-4 border-white shadow-lg transition-all duration-75 z-20"
           style={{
-            left: player.x - 20,
-            top: player.y - 20,
-            width: 40,
-            height: 40
+            left: `${playerPosition.x - 32}px`,
+            top: `${playerPosition.y - 32}px`,
           }}
         >
-          {/* Player Body */}
-          <div
-            className="w-full h-full bg-blue-500 rounded-full border-4 border-white relative"
-            style={{
-              boxShadow: '0 0 25px rgba(59, 130, 246, 0.8), inset 0 0 10px rgba(255,255,255,0.3)'
-            }}
-          >
-            {/* Player direction indicator */}
-            <div
-              className="absolute w-3 h-3 bg-white rounded-full"
-              style={{
-                left: '50%',
-                top: '15%',
-                transform: 'translateX(-50%)',
-                boxShadow: '0 0 5px rgba(255,255,255,0.8)'
-              }}
-            />
-            
-            {/* Movement trail effect */}
-            {player.isMoving && (
-              <div
-                className="absolute inset-0 rounded-full bg-blue-400 animate-ping"
-                style={{ animationDuration: '0.5s' }}
-              />
-            )}
-          </div>
+          🧙‍♂️
         </div>
 
         {/* Player Light Radius */}
         <div
-          className="absolute rounded-full pointer-events-none z-10"
+          className="absolute rounded-full bg-yellow-300/20 pointer-events-none z-10"
           style={{
-            left: player.x - player.lightRadius,
-            top: player.y - player.lightRadius,
-            width: player.lightRadius * 2,
-            height: player.lightRadius * 2,
-            background: `radial-gradient(circle, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0.08) 40%, rgba(255,255,255,0.03) 70%, transparent 100%)`,
-            border: '2px solid rgba(255,255,255,0.2)'
+            left: `${playerPosition.x - 80}px`,
+            top: `${playerPosition.y - 80}px`,
+            width: '160px',
+            height: '160px',
           }}
         />
 
-        {/* Static Lights */}
-        {gameState.staticLights?.map(light => (
+        {/* Attack Range Indicator */}
+        {state.equippedWeapon && (
           <div
-            key={light.id}
-            className="absolute rounded-full pointer-events-none"
+            className="absolute rounded-full border-2 border-red-400/30 pointer-events-none z-15"
             style={{
-              left: light.x - light.radius,
-              top: light.y - light.radius,
-              width: light.radius * 2,
-              height: light.radius * 2,
-              background: `radial-gradient(circle, ${light.color}30 0%, ${light.color}15 50%, transparent 100%)`,
-              border: `1px solid ${light.color}50`
+              left: `${playerPosition.x - getWeaponRange(state.equippedWeapon)}px`,
+              top: `${playerPosition.y - getWeaponRange(state.equippedWeapon)}px`,
+              width: `${getWeaponRange(state.equippedWeapon) * 2}px`,
+              height: `${getWeaponRange(state.equippedWeapon) * 2}px`,
             }}
           />
+        )}
+
+        {/* Attack Visuals */}
+        {attacks.map(attack => (
+          <div key={attack.id} className="absolute z-25">
+            {/* Attack Line */}
+            <div
+              className="absolute bg-red-500 opacity-80 animate-pulse"
+              style={{
+                left: `${Math.min(attack.position.x, attack.targetPosition.x)}px`,
+                top: `${Math.min(attack.position.y, attack.targetPosition.y) - 1}px`,
+                width: `${Math.abs(attack.targetPosition.x - attack.position.x)}px`,
+                height: '2px',
+                transformOrigin: '0 50%',
+                transform: `rotate(${Math.atan2(
+                  attack.targetPosition.y - attack.position.y,
+                  attack.targetPosition.x - attack.position.x
+                )}rad)`
+              }}
+            />
+            {/* Impact Effect */}
+            <div
+              className="absolute w-8 h-8 bg-red-500 rounded-full opacity-60 animate-ping"
+              style={{
+                left: `${attack.targetPosition.x - 16}px`,
+                top: `${attack.targetPosition.y - 16}px`,
+              }}
+            />
+          </div>
         ))}
+
+        {/* Enemies */}
+        {enemies.map(enemy => {
+          // Hide dark realm enemies if not using DarkEyes
+          if (enemy.isDarkRealm && !state.isInDarkRealm) {
+            return null;
+          }
+
+          // Hide dead enemies
+          if (enemy.isDead) {
+            return (
+              <div
+                key={enemy.id}
+                className={`absolute ${getEnemySize(enemy.type)} flex items-center justify-center text-2xl opacity-30 grayscale z-15`}
+                style={{
+                  left: `${enemy.position.x - (enemy.type === 'boss' ? 40 : 20)}px`,
+                  top: `${enemy.position.y - (enemy.type === 'boss' ? 40 : 20)}px`,
+                }}
+              >
+                💀
+              </div>
+            );
+          }
+
+          return (
+            <div key={enemy.id} className="absolute z-15">
+              {/* Enemy */}
+              <div
+                className={`${getEnemySize(enemy.type)} flex items-center justify-center text-3xl transition-all duration-100 ${
+                  enemy.isAggressive ? 'animate-pulse' : ''
+                } ${enemy.isDarkRealm ? 'opacity-70 filter hue-rotate-180' : ''}`}
+                style={{
+                  left: `${enemy.position.x - (enemy.type === 'boss' ? 40 : 20)}px`,
+                  top: `${enemy.position.y - (enemy.type === 'boss' ? 40 : 20)}px`,
+                }}
+              >
+                {getEnemyIcon(enemy.type)}
+              </div>
+
+              {/* Enemy Health Bar */}
+              {(enemy.isAggressive || enemy.health < enemy.maxHealth) && (
+                <div
+                  className="absolute w-16 h-2 bg-slate-700 rounded-full border border-slate-600"
+                  style={{
+                    left: `${enemy.position.x - 32}px`,
+                    top: `${enemy.position.y - 40}px`,
+                  }}
+                >
+                  <div
+                    className="h-full bg-red-500 rounded-full transition-all duration-300"
+                    style={{ width: `${(enemy.health / enemy.maxHealth) * 100}%` }}
+                  />
+                </div>
+              )}
+
+              {/* Aggro Indicator */}
+              {enemy.isAggressive && (
+                <div
+                  className="absolute w-3 h-3 bg-red-500 rounded-full animate-ping"
+                  style={{
+                    left: `${enemy.position.x - 6}px`,
+                    top: `${enemy.position.y - 50}px`,
+                  }}
+                />
+              )}
+            </div>
+          );
+        })}
+
+        {/* Dark Realm Overlay */}
+        {state.isInDarkRealm && (
+          <div className="absolute inset-0 bg-purple-900/30 pointer-events-none z-30">
+            <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-purple-500/10 to-transparent" />
+          </div>
+        )}
       </div>
 
-      {/* Dark Eyes Effect */}
-      {gameState.darkEyesActive && (
-        <div className="absolute inset-0 pointer-events-none z-30">
-          <div className="absolute inset-0 bg-purple-900 opacity-25 animate-pulse" />
-          <div className="absolute inset-0 border-8 border-purple-500 animate-pulse" />
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-purple-300 text-2xl font-bold animate-pulse">
-            DARK EYES ACTIVE
+      {/* Movement Instructions */}
+      <div className="absolute bottom-4 left-4 bg-slate-900/90 rounded-lg p-4 text-white text-sm z-40 border border-slate-600">
+        <p className="font-semibold mb-2 text-purple-300">Controls:</p>
+        <p>WASD / Arrow Keys - Move</p>
+        <p>Mouse Click - Attack (with weapon)</p>
+        <p>I - Inventory</p>
+        <p>E - Weapon Wheel</p>
+        {state.equippedWeapon && (
+          <p className="mt-2 text-green-400">
+            Equipped: {state.equippedWeapon}
+          </p>
+        )}
+      </div>
+
+      {/* Combat Info */}
+      {state.equippedWeapon && (
+        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-slate-900/90 rounded-lg p-3 text-white text-sm z-40 border border-purple-500">
+          <div className="flex items-center gap-4">
+            <span>Range: {getWeaponRange(state.equippedWeapon)}px</span>
+            <span>Damage: {getWeaponDamage(state.equippedWeapon)}</span>
+            <span className="text-red-400">Click to attack!</span>
           </div>
         </div>
       )}
 
-      {/* Weather Effects */}
-      {gameState.weather === 'fog' && (
-        <div className="absolute inset-0 bg-gray-400 opacity-40 pointer-events-none animate-pulse" />
-      )}
-      {gameState.weather === 'storm' && (
-        <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute inset-0 bg-gray-800 opacity-50 animate-pulse" />
-          <div className="absolute inset-0 bg-blue-900 opacity-20 animate-ping" />
+      {/* Minimap */}
+      <div className="absolute top-4 right-4 w-48 h-36 bg-slate-900/90 border-2 border-slate-600 rounded-lg overflow-hidden z-40">
+        <div className="relative w-full h-full">
+          {/* Minimap Background */}
+          <div className={`w-full h-full ${getBiomePattern()}`} />
+          
+          {/* Player Dot */}
+          <div
+            className="absolute w-3 h-3 bg-blue-400 rounded-full border border-white"
+            style={{
+              left: `${(playerPosition.x / worldSize.width) * 192 - 6}px`,
+              top: `${(playerPosition.y / worldSize.height) * 144 - 6}px`,
+            }}
+          />
+          
+          {/* Enemy Dots */}
+          {enemies.map(enemy => (
+            <div
+              key={`mini-${enemy.id}`}
+              className={`absolute w-2 h-2 rounded-full ${
+                enemy.isDead
+                  ? 'bg-gray-600'
+                  : enemy.isDarkRealm && !state.isInDarkRealm 
+                    ? 'hidden' 
+                    : enemy.isAggressive 
+                      ? 'bg-red-400' 
+                      : 'bg-yellow-400'
+              }`}
+              style={{
+                left: `${(enemy.position.x / worldSize.width) * 192 - 4}px`,
+                top: `${(enemy.position.y / worldSize.height) * 144 - 4}px`,
+              }}
+            />
+          ))}
         </div>
-      )}
-      {gameState.weather === 'sandstorm' && (
-        <div className="absolute inset-0 bg-yellow-700 opacity-35 pointer-events-none animate-pulse" />
-      )}
-
-      {/* Realm Indicator */}
-      <div className="absolute top-4 left-4 bg-black/80 backdrop-blur-sm rounded-lg p-2 text-white text-sm z-40">
-        <div className="font-semibold">{gameState.currentRealm}</div>
-        <div className="text-xs text-gray-300">{biome.name}</div>
+        <div className="absolute bottom-1 left-1 text-xs text-white/70">
+          Minimap
+        </div>
       </div>
     </div>
   );
-};
+}
